@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Radar Tracking Simulator</title>
+  <meta name="description" content="A C++20 multi-target radar tracker running live in your browser through WebAssembly. Change the sensor conditions and watch it respond. All data is synthetic.">
+  <meta name="theme-color" content="#09201a">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2309201a'/%3E%3Ccircle cx='16' cy='16' r='11' fill='none' stroke='%234d7f6f' stroke-width='2'/%3E%3Crect x='17' y='8' width='7' height='7' fill='%23f4c430'/%3E%3C/svg%3E">
+  <link rel="preload" href="fonts/b612-700.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main>
+    <section class="console" aria-labelledby="page-title">
+      <div class="board-frame">
+        <p class="loading" id="loading">Loading the tracker…</p>
+        <canvas id="board" role="img" aria-label="Live plot board. Pale crosses are radar detections, most of them false alarms. Yellow pencil lines are tracks the tracker has confirmed."></canvas>
+        <p class="board-readout" aria-live="off">
+          <span>Scan <b id="scan">0</b></span>
+          <span><b id="confirmed">0</b> confirmed</span>
+          <span><b id="tentative">0</b> tentative</span>
+          <span id="scan-time">0.0 ms</span>
+        </p>
+        <dl class="score" aria-label="Score for this run">
+          <div><dt>Targets followed</dt><dd id="followed">–</dd></div>
+          <div><dt>Position error</dt><dd id="rmse">–</dd></div>
+          <div><dt>False tracks / scan</dt><dd id="false-tracks">–</dd></div>
+          <div><dt>Identity switches</dt><dd id="switches">–</dd></div>
+        </dl>
+        <p class="board-key">
+          <span class="key key-detection">Detection</span>
+          <span class="key key-tentative">Tentative</span>
+          <span class="key key-track">Confirmed track</span>
+          <span class="key key-prediction">Predicted 60 s</span>
+          <span class="key key-ring">Uncertainty, 20× scale</span>
+          <span class="key key-truth" id="truth-key" hidden>Ground truth</span>
+        </p>
+      </div>
+
+      <div class="panel">
+        <header>
+          <h1 id="page-title">Radar Tracking Simulator</h1>
+          <p class="lede">A multi-target tracker written in C++20, running here in your browser. Most marks are false alarms. Make the sensor worse and see what the tracker keeps. All data is synthetic.</p>
+        </header>
+
+        <form class="controls" id="controls">
+          <fieldset class="presets">
+            <legend>Conditions</legend>
+            <button type="button" data-preset="clear">Clear</button>
+            <button type="button" data-preset="busy" aria-pressed="true">Busy</button>
+            <button type="button" data-preset="clutter">Heavy clutter</button>
+            <button type="button" data-preset="weak">Weak sensor</button>
+          </fieldset>
+
+          <label class="slider" for="pd">
+            <span>Detection probability <output id="pd-value" for="pd">90%</output></span>
+            <input id="pd" type="range" min="0.5" max="1" step="0.05" value="0.9">
+          </label>
+
+          <label class="slider" for="clutter">
+            <span>False alarms per scan <output id="clutter-value" for="clutter">50</output></span>
+            <input id="clutter" type="range" min="0" max="5" step="1" value="2">
+          </label>
+
+          <fieldset class="rule">
+            <legend>Confirm a track after</legend>
+            <label><input type="radio" name="rule" value="3,5" checked><span>3 of 5 scans</span></label>
+            <label><input type="radio" name="rule" value="4,6"><span>4 of 6</span></label>
+            <label><input type="radio" name="rule" value="5,7"><span>5 of 7</span></label>
+          </fieldset>
+
+          <div class="actions">
+            <button type="button" id="pause" aria-pressed="false">Pause</button>
+            <button type="button" id="speed">Speed 1x</button>
+            <button type="button" id="truth" aria-pressed="false">Show truth</button>
+            <button type="button" id="restart">Restart</button>
+          </div>
+        </form>
+
+      </div>
+    </section>
+
+    <section class="prose" aria-labelledby="how-title">
+      <h2 id="how-title">Each scan runs the same five steps</h2>
+      <ol class="loop">
+        <li><b>Predict.</b> A Kalman filter moves every track forward and grows its uncertainty. That uncertainty is the ring around each track, drawn twenty times larger so you can see it.</li>
+        <li><b>Gate.</b> Mahalanobis distance decides which detections could belong to a track, measured in standard deviations rather than metres.</li>
+        <li><b>Associate.</b> The Hungarian algorithm pairs tracks and detections so total distance is smallest. Confirmed tracks choose first.</li>
+        <li><b>Update.</b> Matched tracks blend in their detection. Unmatched tracks coast on their prediction for a few scans.</li>
+        <li><b>Manage.</b> Leftover detections open tentative tracks. An M-of-N rule confirms the real ones, and repeated misses delete the rest.</li>
+      </ol>
+    </section>
+
+    <section class="prose" aria-labelledby="results-title">
+      <h2 id="results-title">What it measured</h2>
+      <p>Five targets over 200 scans, 10 seeds per row, in the native build. One target turns and two cross at the same point. False alarms and false tracks are per scan, and error is position error.</p>
+      <div class="table-scroll" tabindex="0" role="region" aria-labelledby="results-title">
+        <table>
+          <thead>
+            <tr><th>Detection</th><th>False alarms</th><th>Confirm</th><th>Followed</th><th>Error</th><th>False tracks</th><th class="optional">Worst scan</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>90%</td><td>5</td><td>3 of 5</td><td>100%</td><td>39 m</td><td>0.00</td><td class="optional">0.4 ms</td></tr>
+            <tr><td>90%</td><td>50</td><td>3 of 5</td><td>100%</td><td>40 m</td><td>0.11</td><td class="optional">2.1 ms</td></tr>
+            <tr><td>90%</td><td>500</td><td>3 of 5</td><td>100%</td><td>40 m</td><td class="bad">39.14</td><td class="optional">91 ms</td></tr>
+            <tr><td>90%</td><td>500</td><td>5 of 7</td><td>100%</td><td>40 m</td><td class="good">0.01</td><td class="optional">64 ms</td></tr>
+            <tr><td>60%</td><td>50</td><td>3 of 5</td><td>95.3%</td><td>49 m</td><td>0.11</td><td class="optional">1.5 ms</td></tr>
+            <tr><td>50%</td><td>50</td><td>3 of 5</td><td class="bad">85.4%</td><td>59 m</td><td>0.14</td><td class="optional">1.7 ms</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>The confirmation rule decides how the tracker behaves under clutter. Detection probability is the real limit: below about 60%, tracks drop and restart.</p>
+    </section>
+
+    <section class="prose" aria-labelledby="limits-title">
+      <h2 id="limits-title">Where it stops</h2>
+      <ul class="limits">
+        <li>All data here is synthetic. It has never been tested on real radar data, and it models no real system.</li>
+        <li>A single constant velocity model lags sharp manoeuvres.</li>
+        <li>Global nearest neighbour cannot revise a decision it made in an earlier scan.</li>
+        <li>Timings came from one desktop core. Embedded hardware would differ.</li>
+      </ul>
+    </section>
+
+    <section class="prose" aria-labelledby="built-title">
+      <h2 id="built-title">How it was built</h2>
+      <p>C++20 with Eigen, built with CMake on Linux. 61 tests run in release mode and under AddressSanitizer and UndefinedBehaviorSanitizer. The Hungarian solver is checked against exhaustive search. The tracker on this page is that same code compiled to WebAssembly, so nothing here is a mock-up.</p>
+      <p>The source code is private. I can walk through it in an interview.</p>
+    </section>
+  </main>
+
+  <footer>
+    <p>Built by Yusuf Baran Ozmakgil. <a href="https://github.com/yusufbaranozmekgil-max">GitHub</a></p>
+  </footer>
+
+  <noscript><p class="fatal">This demo needs JavaScript to run the tracker.</p></noscript>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
